@@ -31,41 +31,41 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item -ItemType Directory -Force external | Out-Null
+          if (Test-Path "external") {
+              Remove-Item "external" -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force "external" | Out-Null
 
           Write-Host "========================================"
-          Write-Host "Repository root"
+          Write-Host "Repository"
           Write-Host "========================================"
-          Get-Location
+          Write-Host $env:GITHUB_WORKSPACE
 
           Write-Host ""
-          Write-Host "========================================"
-          Write-Host "LuaEngineUI directory"
-          Write-Host "========================================"
-          Get-ChildItem LuaEngineUI
+          Write-Host "LuaEngineUI:"
+          Get-ChildItem "LuaEngineUI"
 
       # ============================================================
-      # Download compatible Dear ImGui
-      #
-      # IMPORTANT:
-      # The existing sol_ImGui.h belongs to the older ImGui API.
-      # Use 1.89.9 instead of current master.
+      # Dear ImGui 1.89.9
       # ============================================================
       - name: Download compatible Dear ImGui
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "========================================"
+          Write-Host "Download Dear ImGui 1.89.9"
+          Write-Host "========================================"
+
           $url = "https://github.com/ocornut/imgui/archive/refs/tags/v1.89.9.zip"
           $zip = "$env:RUNNER_TEMP\imgui.zip"
 
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $zip
+          Invoke-WebRequest -Uri $url -OutFile $zip
 
           Expand-Archive `
             -Path $zip `
-            -DestinationPath external `
+            -DestinationPath "external" `
             -Force
 
           if (Test-Path "external\imgui") {
@@ -76,77 +76,144 @@ jobs:
             "external\imgui-1.89.9" `
             "imgui"
 
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "ImGui files"
-          Write-Host "========================================"
+          if (!(Test-Path "external\imgui\imgui.h")) {
+              throw "imgui.h not found"
+          }
 
-          Get-ChildItem external\imgui
+          if (!(Test-Path "external\imgui\imgui.cpp")) {
+              throw "imgui.cpp not found"
+          }
 
-          Write-Host ""
-          Write-Host "Backends:"
-          Get-ChildItem external\imgui\backends
+          Write-Host "Dear ImGui OK"
 
       # ============================================================
-      # Download Lua 5.3.6
+      # Lua 5.3.6
       # ============================================================
       - name: Download Lua 5.3.6
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "========================================"
+          Write-Host "Download Lua 5.3.6"
+          Write-Host "========================================"
+
           $url = "https://www.lua.org/ftp/lua-5.3.6.tar.gz"
           $archive = "$env:RUNNER_TEMP\lua-5.3.6.tar.gz"
 
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $archive
+          Invoke-WebRequest -Uri $url -OutFile $archive
 
           tar -xzf $archive -C external
 
           if (!(Test-Path "external\lua-5.3.6\src\lua.h")) {
-              throw "Lua 5.3.6 extraction failed"
+              throw "Lua extraction failed"
+          }
+
+          Write-Host "Lua 5.3.6 OK"
+
+      # ============================================================
+      # sol2
+      #
+      # sol_ImGui.h contains:
+      #
+      #     #include "sol/sol.hpp"
+      #
+      # Therefore include root must contain:
+      #
+      #     sol\sol.hpp
+      # ============================================================
+      - name: Download sol2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "Download sol2 v3.3.0"
+          Write-Host "========================================"
+
+          $url = "https://github.com/ThePhD/sol2/archive/refs/tags/v3.3.0.zip"
+          $zip = "$env:RUNNER_TEMP\sol2.zip"
+
+          Invoke-WebRequest -Uri $url -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath "external" `
+            -Force
+
+          if (Test-Path "external\sol2") {
+              Remove-Item "external\sol2" -Recurse -Force
+          }
+
+          Rename-Item `
+            "external\sol2-3.3.0" `
+            "sol2"
+
+          $solHeader = "external\sol2\include\sol\sol.hpp"
+
+          if (!(Test-Path $solHeader)) {
+              Write-Host "sol.hpp was not found at expected location."
+              Write-Host ""
+              Write-Host "Searching:"
+              Get-ChildItem `
+                "external\sol2" `
+                -Filter "sol.hpp" `
+                -Recurse `
+                -File |
+                Select-Object FullName
+
+              throw "sol/sol.hpp not found"
           }
 
           Write-Host ""
-          Write-Host "Lua source:"
-          Get-ChildItem external\lua-5.3.6\src
+          Write-Host "sol2 header:"
+          Resolve-Path $solHeader
+
+          Write-Host ""
+          Write-Host "sol2 OK"
 
       # ============================================================
-      # Install MinHook
+      # MinHook
       # ============================================================
       - name: Install MinHook
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "========================================"
+          Write-Host "Install MinHook"
+          Write-Host "========================================"
+
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" `
               install minhook:x64-windows-static
 
-          $minHookInclude = Join-Path `
-              $env:VCPKG_INSTALLATION_ROOT `
-              "installed\x64-windows-static\include\MinHook.h"
-
-          $minHookLib = Join-Path `
-              $env:VCPKG_INSTALLATION_ROOT `
-              "installed\x64-windows-static\lib\minhook.x64.lib"
-
-          if (!(Test-Path $minHookInclude)) {
-              throw "MinHook.h not found: $minHookInclude"
+          if ($LASTEXITCODE -ne 0) {
+              throw "vcpkg MinHook installation failed"
           }
 
-          if (!(Test-Path $minHookLib)) {
-              throw "minhook.x64.lib not found: $minHookLib"
+          $root = Join-Path `
+              $env:VCPKG_INSTALLATION_ROOT `
+              "installed\x64-windows-static"
+
+          $header = Join-Path $root "include\MinHook.h"
+          $library = Join-Path $root "lib\minhook.x64.lib"
+
+          if (!(Test-Path $header)) {
+              throw "MinHook.h not found"
+          }
+
+          if (!(Test-Path $library)) {
+              throw "minhook.x64.lib not found"
           }
 
           Write-Host "MinHook header:"
-          Write-Host $minHookInclude
+          Write-Host $header
 
           Write-Host "MinHook library:"
-          Write-Host $minHookLib
+          Write-Host $library
 
       # ============================================================
-      # Build Lua 5.3.6 static library
+      # Build Lua static library
       # ============================================================
       - name: Build Lua 5.3.6 static library
         shell: cmd
@@ -160,10 +227,17 @@ jobs:
 
           call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 
+          if errorlevel 1 exit /b 1
+
           cd /d "%GITHUB_WORKSPACE%\external\lua-5.3.6\src"
 
-          if exist build rmdir /s /q build
+          if exist build (
+              rmdir /s /q build
+          )
+
           mkdir build
+
+          del /q *.obj 2>nul
 
           cl /nologo /c /O2 /MD /DLUA_COMPAT_5_2 ^
             lapi.c ^
@@ -200,86 +274,116 @@ jobs:
             lvm.c ^
             lzio.c
 
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+              echo LUA COMPILE FAILED
+              exit /b 1
+          )
 
           lib /nologo /OUT:build\lua.lib *.obj
 
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+              echo LUA LIB FAILED
+              exit /b 1
+          )
 
           if not exist build\lua.lib (
-            echo ERROR: lua.lib was not generated
-            exit /b 1
+              echo lua.lib NOT FOUND
+              exit /b 1
           )
 
           echo.
-          echo Lua library created:
+          echo ========================================
+          echo Lua library created
+          echo ========================================
+
           dir build\lua.lib
 
       # ============================================================
-      # Patch LuaCore lua_register compatibility
+      # Fix LuaCore::lua_register
       # ============================================================
       - name: Fix LuaCore lua_register
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $luaCore = "LuaEngineUI\lua_core.h"
+          Write-Host "========================================"
+          Write-Host "Fix LuaCore lua_register"
+          Write-Host "========================================"
 
-          if (!(Test-Path $luaCore)) {
-              throw "lua_core.h not found"
+          $files = Get-ChildItem `
+              "LuaEngineUI" `
+              -Include *.cpp,*.h,*.hpp `
+              -Recurse `
+              -File
+
+          foreach ($file in $files) {
+
+              $text = Get-Content $file.FullName -Raw
+
+              if ($text.Contains("LuaCore::lua_register")) {
+
+                  Write-Host "Patch:"
+                  Write-Host $file.FullName
+
+                  $text = $text.Replace(
+                      "LuaCore::lua_register",
+                      "lua_register"
+                  )
+
+                  Set-Content `
+                      -Path $file.FullName `
+                      -Value $text `
+                      -Encoding UTF8
+              }
           }
 
-          $text = Get-Content $luaCore -Raw
+          Write-Host "lua_register patch complete"
 
-          # Some versions of this project incorrectly use
-          # LuaCore::lua_register.
-          #
-          # lua_register is a Lua macro, not a LuaCore member.
-          $text = $text.Replace(
-              "LuaCore::lua_register",
-              "lua_register"
-          )
+      # ============================================================
+      # Verify sol2 specifically before touching VCXPROJ
+      # ============================================================
+      - name: Verify sol2 include layout
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
 
-          Set-Content `
-            -Path $luaCore `
-            -Value $text `
-            -Encoding UTF8
+          Write-Host "========================================"
+          Write-Host "Verify sol2"
+          Write-Host "========================================"
 
-          Write-Host "lua_core.h compatibility patch complete"
+          $includeRoot = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "external\sol2\include"
+
+          $header = Join-Path `
+              $includeRoot `
+              "sol\sol.hpp"
+
+          Write-Host "Include root:"
+          Write-Host $includeRoot
+
+          Write-Host ""
+          Write-Host "Expected header:"
+          Write-Host $header
+
+          if (!(Test-Path $header)) {
+              throw "sol/sol.hpp missing"
+          }
+
+          Write-Host ""
+          Write-Host "SUCCESS: sol/sol.hpp exists"
 
       # ============================================================
       # Patch VCXPROJ
-      #
-      # This is the important part.
-      #
-      # We explicitly inject:
-      #
-      #   Lua include
-      #   ImGui include
-      #   ImGui backends include
-      #   MinHook include
-      #
-      # and compile:
-      #
-      #   imgui.cpp
-      #   imgui_draw.cpp
-      #   imgui_tables.cpp
-      #   imgui_widgets.cpp
-      #   imgui_impl_win32.cpp
-      #   imgui_impl_dx12.cpp
-      #
-      # and link:
-      #
-      #   lua.lib
-      #   minhook.x64.lib
-      #   d3d12.lib
-      #   dxgi.lib
-      #   dxguid.lib
       # ============================================================
       - name: Patch LuaEngineUI vcxproj
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "========================================"
+          Write-Host "Patch LuaEngineUI.vcxproj"
+          Write-Host "========================================"
 
           $project = Join-Path `
               $env:GITHUB_WORKSPACE `
@@ -305,6 +409,18 @@ jobs:
               $imguiRoot `
               "backends"
 
+          # THIS is the directory which contains the "sol" folder.
+          #
+          # external\sol2\include
+          #                  |
+          #                  +--- sol
+          #                       |
+          #                       +--- sol.hpp
+          #
+          $sol2Include = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              "external\sol2\include"
+
           $minhookRoot = Join-Path `
               $env:VCPKG_INSTALLATION_ROOT `
               "installed\x64-windows-static"
@@ -317,60 +433,58 @@ jobs:
               $minhookRoot `
               "lib\minhook.x64.lib"
 
-          if (!(Test-Path $luaLib)) {
-              throw "lua.lib missing: $luaLib"
-          }
+          # --------------------------------------------------------
+          # Validate
+          # --------------------------------------------------------
 
-          if (!(Test-Path $minhookLib)) {
-              throw "MinHook library missing: $minhookLib"
-          }
-
-          $requiredImguiFiles = @(
+          $required = @(
+              $project,
+              "$luaRoot\lua.h",
+              "$luaRoot\lua.hpp",
+              $luaLib,
+              "$imguiRoot\imgui.h",
               "$imguiRoot\imgui.cpp",
               "$imguiRoot\imgui_draw.cpp",
               "$imguiRoot\imgui_tables.cpp",
               "$imguiRoot\imgui_widgets.cpp",
               "$imguiBackend\imgui_impl_win32.cpp",
-              "$imguiBackend\imgui_impl_dx12.cpp"
+              "$imguiBackend\imgui_impl_dx12.cpp",
+              "$sol2Include\sol\sol.hpp",
+              "$minhookInclude\MinHook.h",
+              $minhookLib
           )
 
-          foreach ($file in $requiredImguiFiles) {
+          foreach ($file in $required) {
+
               if (!(Test-Path $file)) {
-                  throw "Required ImGui file missing: $file"
+                  throw "MISSING: $file"
               }
+
+              Write-Host "OK: $file"
           }
 
-          Write-Host "========================================"
-          Write-Host "Patch VCXPROJ"
-          Write-Host "========================================"
-
-          Write-Host "Project:"
-          Write-Host $project
-
-          Write-Host "Lua:"
-          Write-Host $luaRoot
-          Write-Host $luaLib
-
-          Write-Host "ImGui:"
-          Write-Host $imguiRoot
-
-          Write-Host "MinHook:"
-          Write-Host $minhookInclude
-          Write-Host $minhookLib
+          # --------------------------------------------------------
+          # Load XML
+          # --------------------------------------------------------
 
           [xml]$xml = Get-Content $project
 
           $ns = $xml.Project.NamespaceURI
 
-          $manager = New-Object System.Xml.XmlNamespaceManager(
-              $xml.NameTable
+          $manager = New-Object `
+              System.Xml.XmlNamespaceManager(
+                  $xml.NameTable
+              )
+
+          $manager.AddNamespace(
+              "m",
+              $ns
           )
 
-          $manager.AddNamespace("m", $ns)
-
           # --------------------------------------------------------
-          # Patch every ItemDefinitionGroup so we don't depend on
-          # the exact spelling of Release|x64.
+          # Patch ALL ItemDefinitionGroups
+          #
+          # This avoids depending on exact Condition formatting.
           # --------------------------------------------------------
 
           $groups = $xml.SelectNodes(
@@ -378,17 +492,23 @@ jobs:
               $manager
           )
 
+          if ($groups.Count -eq 0) {
+              throw "No ItemDefinitionGroup found in vcxproj"
+          }
+
           foreach ($group in $groups) {
 
-              # -----------------------------
-              # ClCompile
-              # -----------------------------
+              # ====================================================
+              # Compiler
+              # ====================================================
+
               $cl = $group.SelectSingleNode(
                   "m:ClCompile",
                   $manager
               )
 
               if ($null -eq $cl) {
+
                   $cl = $xml.CreateElement(
                       "ClCompile",
                       $ns
@@ -397,36 +517,41 @@ jobs:
                   [void]$group.AppendChild($cl)
               }
 
-              $include = $cl.SelectSingleNode(
+              $includeNode = $cl.SelectSingleNode(
                   "m:AdditionalIncludeDirectories",
                   $manager
               )
 
-              if ($null -eq $include) {
-                  $include = $xml.CreateElement(
+              if ($null -eq $includeNode) {
+
+                  $includeNode = $xml.CreateElement(
                       "AdditionalIncludeDirectories",
                       $ns
                   )
 
-                  [void]$cl.AppendChild($include)
+                  [void]$cl.AppendChild($includeNode)
               }
 
-              $include.InnerText = `
-                  "$luaRoot;" +
-                  "$imguiRoot;" +
-                  "$imguiBackend;" +
-                  "$minhookInclude;" +
+              $includeNode.InnerText = (
+                  $luaRoot + ";" +
+                  $imguiRoot + ";" +
+                  $imguiBackend + ";" +
+                  $sol2Include + ";" +
+                  $minhookInclude + ";" +
                   "%(AdditionalIncludeDirectories)"
+              )
 
-              # -----------------------------
-              # Link
-              # -----------------------------
+              # ====================================================
+              # Linker
+              # ====================================================
+
               $link = $group.SelectSingleNode(
                   "m:Link",
                   $manager
               )
 
               if ($null -eq $link) {
+
                   $link = $xml.CreateElement(
                       "Link",
                       $ns
@@ -441,6 +566,7 @@ jobs:
               )
 
               if ($null -eq $deps) {
+
                   $deps = $xml.CreateElement(
                       "AdditionalDependencies",
                       $ns
@@ -449,26 +575,23 @@ jobs:
                   [void]$link.AppendChild($deps)
               }
 
-              $deps.InnerText = `
-                  "$luaLib;" +
-                  "$minhookLib;" +
+              $deps.InnerText = (
+                  $luaLib + ";" +
+                  $minhookLib + ";" +
                   "d3d12.lib;" +
                   "dxgi.lib;" +
                   "dxguid.lib;" +
+                  "user32.lib;" +
+                  "gdi32.lib;" +
                   "%(AdditionalDependencies)"
+              )
           }
 
-          # --------------------------------------------------------
-          # Add ImGui implementation source files directly into the
-          # project.
-          # --------------------------------------------------------
+          # ========================================================
+          # Add ImGui implementation source files
+          # ========================================================
 
-          $itemGroup = $xml.CreateElement(
-              "ItemGroup",
-              $ns
-          )
-
-          $sources = @(
+          $imguiSources = @(
               "$imguiRoot\imgui.cpp",
               "$imguiRoot\imgui_draw.cpp",
               "$imguiRoot\imgui_tables.cpp",
@@ -477,53 +600,65 @@ jobs:
               "$imguiBackend\imgui_impl_dx12.cpp"
           )
 
-          foreach ($source in $sources) {
+          $newGroup = $xml.CreateElement(
+              "ItemGroup",
+              $ns
+          )
 
-              $alreadyExists = $false
+          foreach ($source in $imguiSources) {
 
-              $existing = $xml.SelectNodes(
+              $exists = $false
+
+              $nodes = $xml.SelectNodes(
                   "//m:ClCompile",
                   $manager
               )
 
-              foreach ($node in $existing) {
-                  if ($node.Include -eq $source) {
-                      $alreadyExists = $true
+              foreach ($node in $nodes) {
+
+                  if ($node.GetAttribute("Include") -eq $source) {
+                      $exists = $true
                       break
                   }
               }
 
-              if (!$alreadyExists) {
+              if (!$exists) {
 
-                  $node = $xml.CreateElement(
+                  $compileNode = $xml.CreateElement(
                       "ClCompile",
                       $ns
                   )
 
-                  $node.SetAttribute(
+                  $compileNode.SetAttribute(
                       "Include",
                       $source
                   )
 
-                  [void]$itemGroup.AppendChild($node)
+                  [void]$newGroup.AppendChild(
+                      $compileNode
+                  )
+
+                  Write-Host "Added source:"
+                  Write-Host $source
               }
           }
 
-          if ($itemGroup.ChildNodes.Count -gt 0) {
-              [void]$xml.Project.AppendChild($itemGroup)
+          if ($newGroup.ChildNodes.Count -gt 0) {
+
+              [void]$xml.Project.AppendChild(
+                  $newGroup
+              )
           }
 
           $xml.Save($project)
 
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "VCXPROJ patched successfully"
+          Write-Host "VCXPROJ PATCH SUCCESS"
           Write-Host "========================================"
 
-          Get-Content $project
-
       # ============================================================
-      # Verify project/dependencies
+      # Verify patched VCXPROJ
       # ============================================================
       - name: Verify patched project
         shell: powershell
@@ -531,42 +666,47 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "========================================"
-          Write-Host "Verify dependencies"
+          Write-Host "Verify patched project"
           Write-Host "========================================"
 
-          $files = @(
-              "external\lua-5.3.6\src\build\lua.lib",
-              "external\imgui\imgui.cpp",
-              "external\imgui\imgui_draw.cpp",
-              "external\imgui\imgui_tables.cpp",
-              "external\imgui\imgui_widgets.cpp",
-              "external\imgui\backends\imgui_impl_win32.cpp",
-              "external\imgui\backends\imgui_impl_dx12.cpp",
-              "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include\MinHook.h",
-              "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib\minhook.x64.lib",
-              "LuaEngineUI\LuaEngineUI.vcxproj"
+          $project = "LuaEngineUI\LuaEngineUI.vcxproj"
+
+          $patterns = @(
+              "sol2",
+              "lua.lib",
+              "minhook.x64.lib",
+              "imgui.cpp",
+              "imgui_draw.cpp",
+              "imgui_widgets.cpp",
+              "imgui_tables.cpp",
+              "imgui_impl_win32.cpp",
+              "imgui_impl_dx12.cpp"
           )
 
-          foreach ($file in $files) {
+          foreach ($pattern in $patterns) {
 
-              if (!(Test-Path $file)) {
-                  throw "MISSING: $file"
+              Write-Host ""
+              Write-Host "---- $pattern ----"
+
+              $result = Select-String `
+                  -Path $project `
+                  -Pattern $pattern
+
+              if (!$result) {
+                  throw "Project does not contain: $pattern"
               }
 
-              Write-Host "OK: $file"
+              $result |
+                  Select-Object -First 5 |
+                  ForEach-Object {
+                      Write-Host $_.Line
+                  }
           }
 
           Write-Host ""
-          Write-Host "Search injected project settings:"
-
-          Select-String `
-              -Path "LuaEngineUI\LuaEngineUI.vcxproj" `
-              -Pattern `
-                "lua.lib", `
-                "minhook.x64.lib", `
-                "imgui.cpp", `
-                "imgui_impl_win32.cpp", `
-                "imgui_impl_dx12.cpp"
+          Write-Host "========================================"
+          Write-Host "PROJECT VERIFY SUCCESS"
+          Write-Host "========================================"
 
       # ============================================================
       # Build
@@ -582,6 +722,24 @@ jobs:
           echo ========================================
 
           call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+
+          if errorlevel 1 (
+              echo VC environment setup failed
+              exit /b 1
+          )
+
+          echo.
+          echo ========================================
+          echo Verify sol2 before MSBuild
+          echo ========================================
+
+          if not exist "%GITHUB_WORKSPACE%\external\sol2\include\sol\sol.hpp" (
+              echo ERROR: sol\sol.hpp missing
+              exit /b 1
+          )
+
+          echo SOL2 OK:
+          echo %GITHUB_WORKSPACE%\external\sol2\include\sol\sol.hpp
 
           echo.
           echo ========================================
@@ -610,7 +768,7 @@ jobs:
           echo ========================================
 
       # ============================================================
-      # Find DLL
+      # Find output DLL
       # ============================================================
       - name: Find LuaEngineUI DLL
         shell: powershell
@@ -618,7 +776,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "========================================"
-          Write-Host "Search LuaEngineUI.dll"
+          Write-Host "Find LuaEngineUI.dll"
           Write-Host "========================================"
 
           $dlls = Get-ChildItem `
@@ -628,8 +786,10 @@ jobs:
               -File
 
           if (!$dlls) {
+
               Write-Host ""
-              Write-Host "All DLL files:"
+              Write-Host "DLL files generated by project:"
+
               Get-ChildItem `
                   -Path $env:GITHUB_WORKSPACE `
                   -Filter "*.dll" `
@@ -648,27 +808,31 @@ jobs:
               Sort-Object Length -Descending |
               Select-Object -First 1
 
+          if (Test-Path "artifact") {
+              Remove-Item "artifact" -Recurse -Force
+          }
+
           New-Item `
               -ItemType Directory `
               -Force `
-              artifact |
+              "artifact" |
               Out-Null
 
           Copy-Item `
-              $dll.FullName `
-              "artifact\LuaEngineUI.dll" `
+              -Path $dll.FullName `
+              -Destination "artifact\LuaEngineUI.dll" `
               -Force
 
           Write-Host ""
-          Write-Host "Selected DLL:"
-          Write-Host $dll.FullName
+          Write-Host "========================================"
+          Write-Host "FINAL DLL"
+          Write-Host "========================================"
 
-          Write-Host ""
-          Write-Host "Artifact:"
-          Get-Item "artifact\LuaEngineUI.dll"
+          Get-Item "artifact\LuaEngineUI.dll" |
+              Select-Object FullName, Length
 
       # ============================================================
-      # Upload
+      # Upload DLL
       # ============================================================
       - name: Upload LuaEngineUI DLL
         uses: actions/upload-artifact@v4
