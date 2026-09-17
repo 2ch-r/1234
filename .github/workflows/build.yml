@@ -8,11 +8,13 @@ jobs:
     runs-on: windows-2022
 
     steps:
+
       # ============================================================
       # 1. Checkout
       # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
+
 
       # ============================================================
       # 2. Setup MSBuild
@@ -20,20 +22,90 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+
       # ============================================================
-      # 3. 下载与旧 LuaEngineUI 源码兼容的 Dear ImGui
+      # 3. 检查 Visual Studio / MSVC
+      # ============================================================
+      - name: Check Visual Studio
+        shell: cmd
+        run: |
+          echo ========================================
+          echo Check Visual Studio
+          echo ========================================
+
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          if not exist "%VSWHERE%" (
+              echo [ERROR] vswhere.exe not found
+              exit /b 1
+          )
+
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+              set "VSROOT=%%i"
+          )
+
+          if not defined VSROOT (
+              echo [ERROR] Visual Studio C++ tools not found
+              exit /b 1
+          )
+
+          echo VSROOT=%VSROOT%
+
+          if not exist "%VSROOT%\Common7\Tools\VsDevCmd.bat" (
+              echo [ERROR] VsDevCmd.bat not found
+              exit /b 1
+          )
+
+          call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+
+          if errorlevel 1 (
+              echo [ERROR] VsDevCmd failed
+              exit /b 1
+          )
+
+          echo.
+          echo ---- cl.exe ----
+          where cl.exe
+
+          echo.
+          echo ---- lib.exe ----
+          where lib.exe
+
+          echo.
+          echo ---- link.exe ----
+          where link.exe
+
+          echo.
+          echo ---- msbuild.exe ----
+          where msbuild.exe
+
+          echo.
+          echo Visual Studio environment OK
+
+
+      # ============================================================
+      # 4. 下载兼容 LuaEngineUI 的 Dear ImGui
       #
-      # LuaEngineUI 是旧工程，不能直接使用最新版 ImGui。
-      # 使用 v1.89.9。
+      # LuaEngineUI 是旧工程，不使用最新版 ImGui。
       # ============================================================
       - name: Download compatible Dear ImGui
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "========================================"
+          Write-Host "Download Dear ImGui 1.89.9"
+          Write-Host "========================================"
+
           New-Item -ItemType Directory -Force external | Out-Null
 
-          Write-Host "Downloading Dear ImGui v1.89.9..."
+          if (Test-Path "external\imgui") {
+              Remove-Item "external\imgui" -Recurse -Force
+          }
+
+          if (Test-Path "external\imgui-1.89.9") {
+              Remove-Item "external\imgui-1.89.9" -Recurse -Force
+          }
 
           Invoke-WebRequest `
             -Uri "https://github.com/ocornut/imgui/archive/refs/tags/v1.89.9.zip" `
@@ -44,29 +116,39 @@ jobs:
             -DestinationPath "external" `
             -Force
 
-          if (Test-Path "external\imgui") {
-              Remove-Item "external\imgui" -Recurse -Force
-          }
-
           Rename-Item `
             "external\imgui-1.89.9" `
             "imgui"
 
+          if (!(Test-Path "external\imgui\imgui.h")) {
+              throw "imgui.h not found"
+          }
+
+          if (!(Test-Path "external\imgui\imgui_internal.h")) {
+              throw "imgui_internal.h not found"
+          }
+
           Write-Host ""
-          Write-Host "Dear ImGui installed:"
-          Get-ChildItem "external\imgui"
+          Write-Host "Dear ImGui 1.89.9 OK"
+
 
       # ============================================================
-      # 4. 下载 Lua 5.3.6 源码
+      # 5. 下载 Lua 5.3.6
       # ============================================================
       - name: Download Lua 5.3.6
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "========================================"
+          Write-Host "Download Lua 5.3.6"
+          Write-Host "========================================"
+
           New-Item -ItemType Directory -Force external | Out-Null
 
-          Write-Host "Downloading Lua 5.3.6..."
+          if (Test-Path "external\lua-5.3.6") {
+              Remove-Item "external\lua-5.3.6" -Recurse -Force
+          }
 
           Invoke-WebRequest `
             -Uri "https://www.lua.org/ftp/lua-5.3.6.tar.gz" `
@@ -74,58 +156,98 @@ jobs:
 
           tar -xzf "external\lua-5.3.6.tar.gz" -C "external"
 
+          if (!(Test-Path "external\lua-5.3.6\src\lua.h")) {
+              throw "lua.h not found"
+          }
+
+          if (!(Test-Path "external\lua-5.3.6\src\lauxlib.h")) {
+              throw "lauxlib.h not found"
+          }
+
           Write-Host ""
-          Write-Host "Lua source:"
-          Get-ChildItem "external\lua-5.3.6\src"
+          Write-Host "Lua 5.3.6 source OK"
+
 
       # ============================================================
-      # 5. 安装 vcpkg 依赖
-      #
-      # sol2 等工程需要的头文件从 vcpkg 获取。
-      # 不在后面覆盖 LibraryPath，避免 Windows SDK 丢失。
+      # 6. 安装 sol2
       # ============================================================
       - name: Install dependencies
         shell: cmd
         run: |
           echo ========================================
-          echo Install dependencies
+          echo Install vcpkg dependencies
           echo ========================================
+
+          if not exist "C:\vcpkg\vcpkg.exe" (
+              echo [ERROR] vcpkg.exe not found
+              exit /b 1
+          )
 
           C:\vcpkg\vcpkg.exe install sol2:x64-windows-static
 
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+              echo [ERROR] vcpkg dependency installation failed
+              exit /b 1
+          )
+
+          echo.
+          echo Dependencies installed successfully
+
 
       # ============================================================
-      # 6. 显示依赖位置，方便排错
+      # 7. 检查所有依赖
       # ============================================================
       - name: Show dependency locations
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host "========================================"
           Write-Host "Dependency locations"
           Write-Host "========================================"
 
+          $imgui = "$env:GITHUB_WORKSPACE\external\imgui"
+          $lua   = "$env:GITHUB_WORKSPACE\external\lua-5.3.6\src"
+          $sol   = "C:\vcpkg\installed\x64-windows-static\include"
+
           Write-Host ""
           Write-Host "ImGui:"
-          Get-ChildItem "external\imgui" | Select-Object Name
+          Write-Host $imgui
 
           Write-Host ""
           Write-Host "Lua:"
-          Get-ChildItem "external\lua-5.3.6\src" | Select-Object Name
+          Write-Host $lua
 
           Write-Host ""
-          Write-Host "vcpkg include:"
-          if (Test-Path "C:\vcpkg\installed\x64-windows-static\include") {
-              Write-Host "OK"
-          } else {
-              throw "vcpkg include directory missing"
+          Write-Host "vcpkg:"
+          Write-Host $sol
+
+          if (!(Test-Path "$imgui\imgui.h")) {
+              throw "ImGui missing"
           }
 
+          if (!(Test-Path "$lua\lua.h")) {
+              throw "Lua missing"
+          }
+
+          if (!(Test-Path $sol)) {
+              throw "vcpkg include missing"
+          }
+
+          Write-Host ""
+          Write-Host "All dependency directories OK"
+
+
       # ============================================================
-      # 7. 编译 Lua 5.3.6 静态库
+      # 8. 编译 Lua 5.3.6 静态库
       #
-      # 这里直接使用 MSVC cl/lib。
-      # 不需要 CMake。
+      # 关键修复：
+      # 普通 GitHub Actions cmd 没有 cl.exe 环境。
+      #
+      # 所以这里主动调用：
+      #
+      # VsDevCmd.bat -arch=x64 -host_arch=x64
+      #
       # ============================================================
       - name: Build Lua 5.3.6 static library
         shell: cmd
@@ -134,14 +256,68 @@ jobs:
           echo Build Lua 5.3.6 static library
           echo ========================================
 
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          if not exist "%VSWHERE%" (
+              echo [ERROR] vswhere.exe not found
+              exit /b 1
+          )
+
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+              set "VSROOT=%%i"
+          )
+
+          if not defined VSROOT (
+              echo [ERROR] Visual Studio C++ installation not found
+              exit /b 1
+          )
+
+          echo.
+          echo Visual Studio:
+          echo %VSROOT%
+
+          call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+
+          if errorlevel 1 (
+              echo [ERROR] Failed to initialize Visual Studio environment
+              exit /b 1
+          )
+
+          echo.
+          echo ========================================
+          echo Verify MSVC tools
+          echo ========================================
+
+          where cl.exe
+
+          if errorlevel 1 (
+              echo [ERROR] cl.exe still not available
+              exit /b 1
+          )
+
+          where lib.exe
+
+          if errorlevel 1 (
+              echo [ERROR] lib.exe not available
+              exit /b 1
+          )
+
           cd /d "%GITHUB_WORKSPACE%\external\lua-5.3.6\src"
 
-          if not exist build mkdir build
+          if exist build (
+              rmdir /s /q build
+          )
+
+          mkdir build
 
           cd build
 
-          cl /nologo /c /O2 /MD /DLUA_COMPAT_5_2 ^
-            /I.. ^
+          echo.
+          echo ========================================
+          echo Compiling Lua source files
+          echo ========================================
+
+          cl /nologo /c /O2 /MD /DLUA_COMPAT_5_2 /I.. ^
             ..\lapi.c ^
             ..\lcode.c ^
             ..\lctype.c ^
@@ -176,11 +352,23 @@ jobs:
             ..\loadlib.c ^
             ..\linit.c
 
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+              echo.
+              echo [ERROR] Lua compilation failed
+              exit /b 1
+          )
+
+          echo.
+          echo ========================================
+          echo Creating lua.lib
+          echo ========================================
 
           lib /nologo /OUT:lua.lib *.obj
 
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+              echo [ERROR] lib.exe failed
+              exit /b 1
+          )
 
           if not exist lua.lib (
               echo [ERROR] lua.lib was not generated
@@ -188,14 +376,22 @@ jobs:
           )
 
           echo.
-          echo Lua library successfully generated:
+          echo ========================================
+          echo LUA BUILD SUCCESS
+          echo ========================================
+
           dir lua.lib
 
+
       # ============================================================
-      # 8. 修复 LuaCore::lua_register / StatusAPI 兼容问题
+      # 9. StatusAPI / Lua 5.3 lua_register 兼容修复
       #
-      # Lua 5.3 的 lua_register 是宏，不是 LuaCore 成员。
-      # 如果旧源码写成 LuaCore::lua_register，则自动修正。
+      # Lua 5.3 的 lua_register 是宏。
+      # 旧代码中的 LuaCore::lua_register 会导致：
+      #
+      # C2039 / C3861
+      #
+      # 自动改为 lua_register。
       # ============================================================
       - name: Fix LuaCore lua_register
         shell: powershell
@@ -206,20 +402,33 @@ jobs:
           Write-Host "Fix LuaCore lua_register"
           Write-Host "========================================"
 
+          $root = "$env:GITHUB_WORKSPACE\LuaEngineUI"
+
+          if (!(Test-Path $root)) {
+              throw "LuaEngineUI directory not found"
+          }
+
           $files = Get-ChildItem `
-            -Path "$env:GITHUB_WORKSPACE\LuaEngineUI" `
+            -Path $root `
             -Recurse `
             -File `
             -Include *.cpp,*.h,*.hpp
 
+          $patchCount = 0
+
           foreach ($file in $files) {
 
               $text = Get-Content `
-                $file.FullName `
+                -Path $file.FullName `
                 -Raw
 
-              $newText = $text `
-                -replace 'LuaCore::lua_register', 'lua_register'
+              if ($null -eq $text) {
+                  continue
+              }
+
+              $newText = $text -replace `
+                'LuaCore::lua_register', `
+                'lua_register'
 
               if ($newText -ne $text) {
 
@@ -230,14 +439,18 @@ jobs:
                     -Path $file.FullName `
                     -Value $newText `
                     -Encoding UTF8
+
+                  $patchCount++
               }
           }
 
           Write-Host ""
-          Write-Host "lua_register compatibility patch complete."
+          Write-Host "Patched files: $patchCount"
+          Write-Host "lua_register compatibility check complete."
+
 
       # ============================================================
-      # 9. 查找 LuaEngineUI 工程文件
+      # 10. 检查工程
       # ============================================================
       - name: Verify project files
         shell: powershell
@@ -245,61 +458,115 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "========================================"
-          Write-Host "Verify project"
+          Write-Host "Verify LuaEngineUI project"
           Write-Host "========================================"
 
-          if (!(Test-Path "$env:GITHUB_WORKSPACE\LuaEngineUI.sln")) {
+          $sln = "$env:GITHUB_WORKSPACE\LuaEngineUI.sln"
+          $vcx = "$env:GITHUB_WORKSPACE\LuaEngineUI\LuaEngineUI.vcxproj"
+
+          if (!(Test-Path $sln)) {
               throw "LuaEngineUI.sln not found"
           }
 
-          if (!(Test-Path "$env:GITHUB_WORKSPACE\LuaEngineUI\LuaEngineUI.vcxproj")) {
+          if (!(Test-Path $vcx)) {
               throw "LuaEngineUI.vcxproj not found"
           }
 
-          Write-Host "LuaEngineUI.sln OK"
-          Write-Host "LuaEngineUI.vcxproj OK"
+          Write-Host ""
+          Write-Host "Solution:"
+          Write-Host $sln
+
+          Write-Host ""
+          Write-Host "Project:"
+          Write-Host $vcx
+
+          Write-Host ""
+          Write-Host "Project files OK"
+
 
       # ============================================================
-      # 10. 编译 LuaEngineUI
+      # 11. 编译 LuaEngineUI
       #
-      # 重点：
+      # 再次初始化 VsDevCmd。
       #
-      # 不使用：
+      # 每个 GitHub Actions step 是独立进程，
+      # 上一个 step 的 VS 环境不会自动继承。
       #
-      #   /p:LibraryPath=...
+      # 同时：
       #
-      # 因为这样会覆盖 Visual Studio / Windows SDK 的默认
-      # LibraryPath，从而导致：
+      # 不设置 /p:LibraryPath
       #
-      #   LNK1181 kernel32.lib
+      # 防止覆盖 Windows SDK 默认目录并再次出现：
       #
-      # IncludePath 后面保留 $(IncludePath)，因此不会破坏
-      # MSVC/Windows SDK 默认头文件路径。
+      # LNK1181 kernel32.lib
+      #
       # ============================================================
       - name: Build LuaEngineUI Release x64
         shell: cmd
         run: |
           echo ========================================
-          echo Build LuaEngineUI StatusAPI Fixed
+          echo Build LuaEngineUI 1.3.2 StatusAPI Fixed
           echo ========================================
+
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+              set "VSROOT=%%i"
+          )
+
+          if not defined VSROOT (
+              echo [ERROR] Visual Studio C++ installation not found
+              exit /b 1
+          )
+
+          call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+
+          if errorlevel 1 (
+              echo [ERROR] Failed to initialize Visual Studio
+              exit /b 1
+          )
+
+          echo.
+          echo ========================================
+          echo Verify build environment
+          echo ========================================
+
+          where cl.exe
+          where link.exe
+          where msbuild.exe
+
+          echo.
 
           set "LUA_ROOT=%GITHUB_WORKSPACE%\external\lua-5.3.6\src"
           set "LUA_LIB=%GITHUB_WORKSPACE%\external\lua-5.3.6\src\build\lua.lib"
           set "IMGUI_ROOT=%GITHUB_WORKSPACE%\external\imgui"
           set "VCPKG_INCLUDE=C:\vcpkg\installed\x64-windows-static\include"
 
-          echo.
           echo LUA_ROOT=%LUA_ROOT%
           echo LUA_LIB=%LUA_LIB%
           echo IMGUI_ROOT=%IMGUI_ROOT%
           echo VCPKG_INCLUDE=%VCPKG_INCLUDE%
+
           echo.
 
-          if not exist "%LUA_LIB%" (
-              echo [ERROR] Lua library missing:
-              echo %LUA_LIB%
+          if not exist "%LUA_ROOT%\lua.h" (
+              echo [ERROR] lua.h missing
               exit /b 1
           )
+
+          if not exist "%LUA_LIB%" (
+              echo [ERROR] lua.lib missing
+              exit /b 1
+          )
+
+          if not exist "%IMGUI_ROOT%\imgui.h" (
+              echo [ERROR] imgui.h missing
+              exit /b 1
+          )
+
+          echo ========================================
+          echo Start MSBuild
+          echo ========================================
 
           msbuild LuaEngineUI.sln /m ^
             /p:Configuration=Release ^
@@ -314,18 +581,19 @@ jobs:
           if errorlevel 1 (
               echo.
               echo ========================================
-              echo BUILD FAILED
+              echo LUAENGINEUI BUILD FAILED
               echo ========================================
               exit /b 1
           )
 
           echo.
           echo ========================================
-          echo MSBUILD SUCCESS
+          echo LUAENGINEUI BUILD SUCCESS
           echo ========================================
 
+
       # ============================================================
-      # 11. 搜索最终 DLL
+      # 12. 查找生成的 DLL
       # ============================================================
       - name: Find LuaEngineUI DLL
         shell: powershell
@@ -333,7 +601,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "========================================"
-          Write-Host "Searching for LuaEngineUI DLL"
+          Write-Host "Find LuaEngineUI.dll"
           Write-Host "========================================"
 
           $dlls = Get-ChildItem `
@@ -343,8 +611,11 @@ jobs:
             -Filter "LuaEngineUI.dll"
 
           if (!$dlls) {
+
               Write-Host ""
-              Write-Host "All generated DLL files:"
+              Write-Host "LuaEngineUI.dll not found."
+              Write-Host ""
+              Write-Host "Generated DLL files:"
 
               Get-ChildItem `
                 -Path "$env:GITHUB_WORKSPACE" `
@@ -353,36 +624,47 @@ jobs:
                 -Filter "*.dll" |
                 Select-Object FullName, Length
 
-              throw "LuaEngineUI.dll not found"
+              throw "LuaEngineUI.dll not generated"
           }
 
           Write-Host ""
-          Write-Host "LuaEngineUI.dll found:"
+          Write-Host "Found:"
 
           $dlls |
-            Select-Object FullName, Length
+            Select-Object FullName, Length, LastWriteTime
 
           $dll = $dlls |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
+          $artifactDir = "$env:GITHUB_WORKSPACE\artifact"
+
+          if (Test-Path $artifactDir) {
+              Remove-Item $artifactDir -Recurse -Force
+          }
+
           New-Item `
             -ItemType Directory `
-            -Force `
-            "$env:GITHUB_WORKSPACE\artifact" |
+            -Path $artifactDir `
+            -Force |
             Out-Null
 
           Copy-Item `
-            $dll.FullName `
-            "$env:GITHUB_WORKSPACE\artifact\LuaEngineUI.dll" `
+            -Path $dll.FullName `
+            -Destination "$artifactDir\LuaEngineUI.dll" `
             -Force
 
           Write-Host ""
-          Write-Host "Artifact prepared:"
-          Get-Item "$env:GITHUB_WORKSPACE\artifact\LuaEngineUI.dll"
+          Write-Host "========================================"
+          Write-Host "FINAL DLL"
+          Write-Host "========================================"
+
+          Get-Item "$artifactDir\LuaEngineUI.dll" |
+            Select-Object FullName, Length, LastWriteTime
+
 
       # ============================================================
-      # 12. 上传 DLL
+      # 13. 上传最终 DLL
       # ============================================================
       - name: Upload LuaEngineUI DLL
         uses: actions/upload-artifact@v4
@@ -390,3 +672,4 @@ jobs:
           name: LuaEngineUI-1.3.2-StatusAPI-Fixed
           path: artifact/LuaEngineUI.dll
           if-no-files-found: error
+          retention-days: 30
