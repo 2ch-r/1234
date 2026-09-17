@@ -1,0 +1,381 @@
+name: Build LuaEngineUI 1.3.2 StatusAPI Fixed
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. Setup MSBuild
+      # ============================================================
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # ============================================================
+      # 3. 下载与 LuaEngineUI 老代码兼容的 Dear ImGui
+      #
+      # 不使用 vcpkg 当前最新版 ImGui，
+      # 避免 PushAllowKeyboardFocus / Image 等 API 不兼容。
+      # ============================================================
+      - name: Download compatible Dear ImGui
+        shell: powershell
+        run: |
+          Write-Host "========================================"
+          Write-Host "Download Dear ImGui v1.89.9"
+          Write-Host "========================================"
+
+          New-Item -ItemType Directory -Force external | Out-Null
+
+          git clone `
+            --depth 1 `
+            --branch v1.89.9 `
+            https://github.com/ocornut/imgui.git `
+            external/imgui
+
+          if (!(Test-Path "external/imgui/imgui.h")) {
+              Write-Error "imgui.h not found"
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Dear ImGui:"
+          Get-Item "external/imgui/imgui.h"
+
+          Write-Host ""
+          Write-Host "ImGui download OK."
+
+      # ============================================================
+      # 4. 安装 Lua / sol2 / MinHook
+      #
+      # Lua 使用 vcpkg 静态库。
+      # 不再手动调用 cl.exe 编译 Lua。
+      # ============================================================
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          Write-Host "========================================"
+          Write-Host "Install dependencies"
+          Write-Host "========================================"
+
+          vcpkg install `
+            lua:x64-windows-static `
+            sol2:x64-windows-static `
+            minhook:x64-windows-static
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "vcpkg install failed"
+              exit 1
+          }
+
+      # ============================================================
+      # 5. 检查依赖
+      # ============================================================
+      - name: Verify dependencies
+        shell: powershell
+        run: |
+          $root = "C:\vcpkg\installed\x64-windows-static"
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Verify dependencies"
+          Write-Host "========================================"
+
+          $required = @(
+              "$root\include\lua.h",
+              "$root\include\lauxlib.h",
+              "$root\include\lualib.h",
+              "$root\include\sol",
+              "external\imgui\imgui.h"
+          )
+
+          foreach ($item in $required) {
+              if (!(Test-Path $item)) {
+                  Write-Error "Missing dependency: $item"
+                  exit 1
+              }
+
+              Write-Host "[OK] $item"
+          }
+
+          Write-Host ""
+          Write-Host "MinHook headers:"
+
+          Get-ChildItem `
+            "$root\include" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+          Where-Object {
+              $_.Name -match "MinHook"
+          } |
+          Select-Object FullName
+
+          Write-Host ""
+          Write-Host "Available libraries:"
+
+          Get-ChildItem "$root\lib" -Filter "*.lib" |
+            Select-Object Name
+
+      # ============================================================
+      # 6. 检查 StatusAPI 修正版源码
+      #
+      # 这里只检查。
+      # 不修改 LuaCore / D3D12Hook.cpp。
+      # ============================================================
+      - name: Verify StatusAPI fixed source
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Verify StatusAPI fixed source"
+          Write-Host "========================================"
+
+          if (!(Test-Path "LuaEngineUI\D3D12Hook.cpp")) {
+              Write-Error "LuaEngineUI\D3D12Hook.cpp not found"
+              exit 1
+          }
+
+          if (!(Test-Path "LuaEngineUI\lua_core.h")) {
+              Write-Error "LuaEngineUI\lua_core.h not found"
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Searching for obsolete LuaCore registration calls..."
+
+          $bad = Get-ChildItem `
+            -Path "LuaEngineUI" `
+            -Recurse `
+            -Include *.cpp,*.h,*.hpp |
+          Select-String `
+            -Pattern "LuaCore::Lua_register|LuaCore::lua_register"
+
+          if ($bad) {
+              Write-Host ""
+              Write-Host "WARNING: obsolete LuaCore registration call found:"
+              $bad | ForEach-Object {
+                  Write-Host "$($_.Path):$($_.LineNumber)"
+                  Write-Host $_.Line
+              }
+
+              Write-Error "StatusAPI source does not appear to be the fixed version."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "[OK] No obsolete LuaCore::Lua_register/lua_register calls."
+          Write-Host "[OK] StatusAPI source check passed."
+
+      # ============================================================
+      # 7. 修复旧版 ImGui API 名称
+      #
+      # 这个只处理 ImGui API，不碰 LuaCore。
+      # ============================================================
+      - name: Patch old ImGui API
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Patch old ImGui API"
+          Write-Host "========================================"
+
+          $files = Get-ChildItem `
+            -Path "LuaEngineUI" `
+            -Recurse `
+            -Include *.cpp,*.h,*.hpp
+
+          foreach ($file in $files) {
+
+              $text = [System.IO.File]::ReadAllText(
+                  $file.FullName
+              )
+
+              $original = $text
+
+              $text = $text.Replace(
+                  "ImGui::PushAllowKeyboardFocus",
+                  "ImGui::PushTabStop"
+              )
+
+              $text = $text.Replace(
+                  "ImGui::PopAllowKeyboardFocus",
+                  "ImGui::PopTabStop"
+              )
+
+              if ($text -ne $original) {
+
+                  Write-Host "Patched ImGui API:"
+                  Write-Host $file.FullName
+
+                  [System.IO.File]::WriteAllText(
+                      $file.FullName,
+                      $text,
+                      [System.Text.UTF8Encoding]::new($false)
+                  )
+              }
+          }
+
+          Write-Host ""
+          Write-Host "ImGui API patch complete."
+
+      # ============================================================
+      # 8. 自动检测 Lua 静态库名字
+      # ============================================================
+      - name: Detect Lua library
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Detect Lua library"
+          Write-Host "========================================"
+
+          $libDir = "C:\vcpkg\installed\x64-windows-static\lib"
+
+          $luaLib = Get-ChildItem `
+            $libDir `
+            -Filter "*.lib" |
+          Where-Object {
+              $_.Name -match "^lua.*\.lib$"
+          } |
+          Select-Object -First 1
+
+          if (!$luaLib) {
+              Write-Error "Lua .lib not found"
+              exit 1
+          }
+
+          Write-Host "Detected:"
+          Write-Host $luaLib.FullName
+
+          "LUA_LIB=$($luaLib.Name)" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
+      # ============================================================
+      # 9. 编译 LuaEngineUI x64 Release
+      # ============================================================
+      - name: Build LuaEngineUI Release x64
+        shell: cmd
+        run: |
+          echo ========================================
+          echo Build LuaEngineUI StatusAPI Fixed
+          echo ========================================
+
+          echo.
+          echo Lua library = %LUA_LIB%
+          echo.
+
+          msbuild LuaEngineUI.sln /m ^
+            /p:Configuration=Release ^
+            /p:Platform=x64 ^
+            /p:VcpkgTriplet=x64-windows-static ^
+            /p:VcpkgUseStatic=true ^
+            /p:VcpkgEnableManifest=false ^
+            /p:IncludePath="%GITHUB_WORKSPACE%\external\imgui;%GITHUB_WORKSPACE%\external\imgui\backends;C:\vcpkg\installed\x64-windows-static\include;$(IncludePath)" ^
+            /p:LibraryPath="C:\vcpkg\installed\x64-windows-static\lib;$(LibraryPath)" ^
+            /p:AdditionalDependencies="%LUA_LIB%;$(AdditionalDependencies)" ^
+            /v:minimal
+
+          if errorlevel 1 (
+              echo.
+              echo ========================================
+              echo BUILD FAILED
+              echo ========================================
+              exit /b 1
+          )
+
+          echo.
+          echo ========================================
+          echo MSBUILD SUCCESS
+          echo ========================================
+
+      # ============================================================
+      # 10. 查找编译出的 LuaEngineUI.dll
+      # ============================================================
+      - name: Find LuaEngineUI DLL
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Find generated LuaEngineUI DLL"
+          Write-Host "========================================"
+
+          $dlls = Get-ChildItem `
+            -Path . `
+            -Recurse `
+            -Filter "*.dll" |
+          Where-Object {
+              $_.FullName -notmatch "\\external\\" -and
+              $_.FullName -notmatch "\\packages\\" -and
+              $_.FullName -notmatch "\\.git\\"
+          }
+
+          Write-Host ""
+          Write-Host "DLL candidates:"
+
+          $dlls | ForEach-Object {
+              Write-Host $_.FullName
+          }
+
+          $target = $dlls |
+            Where-Object {
+                $_.Name -ieq "LuaEngineUI.dll"
+            } |
+            Select-Object -First 1
+
+          if (!$target) {
+              $target = $dlls |
+                Where-Object {
+                    $_.Name -match "LuaEngineUI"
+                } |
+                Select-Object -First 1
+          }
+
+          if (!$target) {
+              Write-Error "LuaEngineUI DLL NOT FOUND"
+              exit 1
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            artifact |
+            Out-Null
+
+          Copy-Item `
+            $target.FullName `
+            "artifact\LuaEngineUI.dll" `
+            -Force
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "BUILD SUCCESS"
+          Write-Host "========================================"
+
+          Get-Item "artifact\LuaEngineUI.dll" |
+            Format-List `
+              Name,
+              Length,
+              LastWriteTime,
+              FullName
+
+      # ============================================================
+      # 11. 上传 DLL
+      # ============================================================
+      - name: Upload LuaEngineUI DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuaEngineUI-1.3.2-StatusAPI-Fixed-DX12
+          path: artifact/LuaEngineUI.dll
+          if-no-files-found: error
+          retention-days: 7
